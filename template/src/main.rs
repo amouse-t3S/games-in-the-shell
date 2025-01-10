@@ -1,17 +1,12 @@
 #[cfg(feature = "debug")]
-use std::io::{self, Write};
-
-#[cfg(feature = "debug")]
-use std::sync::mpsc;
-
-#[cfg(feature = "debug")]
-use std::thread;
-
-#[cfg(feature = "debug")]
-use std::time::{Duration, Instant};
-
-#[cfg(feature = "debug")]
-use termion; // デバッグビルド時のみインクルード
+use {
+    std::io::{stdin, stdout, Read, Write},
+    std::sync::mpsc,
+    std::thread,
+    std::time::{Duration, Instant},
+    termion::raw::IntoRawMode,
+    termion::*,
+};
 
 use lazy_static::lazy_static;
 use std::sync::Mutex;
@@ -19,7 +14,7 @@ use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
 
 lazy_static! {
-    // 80x24 のスクリーンバッファ
+    // 80x24 Screen buffer
     static ref SCREEN: Mutex<Vec<String>> = Mutex::new(vec!["/".repeat(80); 24]);
 }
 
@@ -44,29 +39,28 @@ fn update_screen(x: usize, y: usize, char: char) {
     }
 }
 
+/* debug logic below  */
+
 #[cfg(feature = "debug")]
 fn draw_screen() {
-    let screen = SCREEN.lock().unwrap(); // バッファをロックして変更
+    let screen = SCREEN.lock().unwrap();
     print!("\x1b[H\x1b[2J{}", screen.join("\n\r"));
-    std::io::stdout().flush().unwrap();
+    stdout().flush().unwrap();
 }
 
 fn main() {
     #[cfg(feature = "debug")]
     {
-        use termion::raw::IntoRawMode;
-        use termion::*;
+        let mut _stdout = stdout().into_raw_mode().unwrap();
 
-        let mut stdout = io::stdout().into_raw_mode().unwrap();
-        write!(stdout, "{}", clear::All).unwrap();
-        stdout.flush().unwrap();
+        write!(_stdout, "{}", clear::All).unwrap();
+        _stdout.flush().unwrap();
 
         let (tx, rx) = mpsc::channel();
-        let frame_duration = Duration::from_millis(100); // 10 FPS
+        let frame_duration = Duration::from_millis(33); // 30 FPS
 
         // 別スレッドでキー入力を待ち受け
-        let hundle = thread::spawn(move || {
-            use std::io::{stdin, Read};
+        let _hundle = thread::spawn(move || {
             let mut buffer = [0; 1];
             while let Ok(_) = stdin().read(&mut buffer) {
                 match tx.send(buffer[0] as char) {
@@ -77,8 +71,8 @@ fn main() {
         });
 
         let mut running = true;
-
         let mut x = 0;
+
         while running {
             let start_time = Instant::now();
 
