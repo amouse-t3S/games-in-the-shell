@@ -7,6 +7,8 @@ lazy_static! {
     static ref SCREEN: Mutex<Vec<String>> = Mutex::new(vec!["/".repeat(80); 24]);
 }
 
+struct Meta {}
+
 #[wasm_bindgen]
 #[no_mangle]
 pub extern "C" fn game_loop() {}
