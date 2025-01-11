@@ -8,7 +8,9 @@ edition = "2021"
 [dependencies]
 lazy_static = "1.5.0"
 wasm-bindgen = "0.2.99"
-termion = { version = "4.0.3", optional = true }
 
-[features]
-debug = ["termion"]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+termion = "4.0.3"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
