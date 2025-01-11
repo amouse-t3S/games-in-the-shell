@@ -20,7 +20,6 @@ pub extern "C" fn get_screen() -> Vec<u8> {
     let mut buffer = Vec::new();
     for row in screen.iter() {
         buffer.extend_from_slice(row.as_bytes());
-        buffer.extend_from_slice("\n\r".as_bytes())
     }
     buffer
 }

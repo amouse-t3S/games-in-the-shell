@@ -2,7 +2,8 @@
 <html>
 
 <head>
-  <meta name="viewport" content="width=640">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1, shrink-to-fit=no">
   <link rel="preload" href="./font/TerminusTTF-4.49.3.ttf" as="font" type="font/ttf" crossorigin="anonymous">
   <link rel="stylesheet" href="xterm/css/xterm.css" />
   <script src="xterm/lib/xterm.js"></script>
@@ -14,17 +15,19 @@
       src: url(./font/TerminusTTF-4.49.3.ttf);
     }
 
-    #terminal {
-      width: 640px;
-      height: 400px;
-    }
+    #terminal {}
 
-    html,
     body {
       padding: 0;
       margin: 0;
-      width: 640px;
+      width: 100vw;
+      height: 100svh;
       overflow: hidden;
+      background-color: gray;
+
+      display: grid;
+      place-items: center;
+
     }
   </style>
 </head>
@@ -36,7 +39,25 @@
     import init, { get_screen } from './pkg/template.js';
     await init();
 
-    var term = new Terminal({ cols: 80, rows: 25, fontFamily: 'Terminus', fontSize: 16, letterSpacing: 0, lineHeight: 1 });
+    let w = window.innerWidth, h = window.innerHeight;
+    let fs = Math.min(16, Math.floor(Math.min(w / 80 * 2, h / 24)));
+
+    let d = document.getElementById("terminal");
+    let dw = fs * 40, dh = fs * 24;
+    d.style.width = dw + "px";
+    d.style.height = dh + "px";
+
+    var term = new Terminal({
+      cols: 80,
+      rows: 24,
+      fontFamily: 'Terminus',
+      fontSize: fs,
+      letterSpacing: 0,
+      lineHeight: 1,
+      RendererType: 'canvas',
+      cursorStyle: 'underline',
+      allowTransparency: false
+    });
     term.open(document.getElementById('terminal'));
 
     const result = get_screen();
