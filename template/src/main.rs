@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use termion::raw::IntoRawMode;
 use termion::*;
 
-use template::{game_loop, get_screen, update_screen};
+use template::{game_loop, get_screen, key, Button};
 
 /* debug logic below  */
 fn draw_screen() {
@@ -44,12 +44,12 @@ fn main() {
         // 入力処理（非ブロッキング）
         if let Ok(input) = rx.try_recv() {
             match input {
-                'q' => running = false, // 'q'キーで終了
-                _ => {
-                    update_screen(x % 80, x / 80, input);
-                    x += 1;
-                    x %= 80 * 24;
-                }
+                'q' => running = false, // 'q'キーで終了,
+                'w' => key(Button::Up),
+                'a' => key(Button::Left),
+                's' => key(Button::Down),
+                'd' => key(Button::Right),
+                _ => {}
             }
         }
 
