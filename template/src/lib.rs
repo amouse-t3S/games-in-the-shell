@@ -37,13 +37,9 @@ pub enum Button {
 #[wasm_bindgen]
 #[no_mangle]
 pub fn get_screen() -> Vec<u8> {
-    let screen = SCREEN.lock().unwrap(); // バッファをロックしてアクセス
-    let mut buffer = Vec::new();
-    for row in screen.iter() {
-        buffer.extend(row.as_bytes());
-        buffer.extend("\n\r".as_bytes());
-    }
-    buffer
+    let screen = SCREEN.lock().unwrap();
+    let joined = screen.join("\n\r");
+    joined.into_bytes()
 }
 
 #[wasm_bindgen]
