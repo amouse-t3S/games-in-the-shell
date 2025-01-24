@@ -11,8 +11,11 @@ use template::{game_loop, get_screen, key, Button};
 fn draw_screen() {
     let bytes = get_screen();
     let chars: String = bytes.iter().map(|&b| b as char).collect();
-    print!("\x1b[H\x1b[2J{}", chars);
-    stdout().flush().unwrap();
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+
+    write!(handle, "\x1b[H{}", chars).unwrap();
+    handle.flush().unwrap();
 }
 
 fn main() {
