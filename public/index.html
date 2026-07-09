@@ -36,7 +36,7 @@
   <div id="terminal"></div>
 
   <script type="module">
-    import init, { get_screen } from './pkg/template.js';
+    import init, { get_screen, Button } from './pkg/template.js';
     await init();
 
     let w = window.innerWidth, h = window.innerHeight;
@@ -62,6 +62,8 @@
 
     const result = get_screen();
     term.write(result);
+
+    console.log(Button);
   </script>
 </body>
 

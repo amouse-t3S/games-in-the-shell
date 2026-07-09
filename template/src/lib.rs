@@ -6,6 +6,7 @@ lazy_static! {
     // 80x24 Screen buffer
     static ref SCREEN: Mutex<Vec<String>> = Mutex::new(vec![".".repeat(80); 24]);
 
+    // game specific variables below.
     static ref STAT: Mutex<Mem> = Mutex::new(Mem {
         keys: [0, 0, 0, 0],
         pos: Position { x: 0, y: 0 },
