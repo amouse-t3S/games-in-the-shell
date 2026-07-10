@@ -80,11 +80,15 @@ fn h_thresh(len: usize) -> u32 { (len as u32 * 10).max(SPEED_INC) }
 fn v_thresh(len: usize) -> u32 { h_thresh(len) * 2 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Strategy { Survive, Hunt }
+enum Strategy { Survive, Forage, Hunt }
 
 impl Strategy {
     fn label(self) -> &'static str {
-        match self { Strategy::Survive => "SURV", Strategy::Hunt => "HUNT" }
+        match self {
+            Strategy::Survive => "SURV",
+            Strategy::Forage  => "FOOD",
+            Strategy::Hunt    => "HUNT",
+        }
     }
 }
 
@@ -203,20 +207,17 @@ impl Game {
 
         let Some((hx, hy)) = self.snakes[1].head() else { return; };
         let (cdx, cdy) = self.snakes[1].dir;
-        // Always allow the AI to choose a vertical direction, even when v_accum
-        // isn't ready yet. try_advance will stall the move until the accumulator
-        // fires — the snake pauses for a tick rather than charging into a corner.
-        let allow_vert = true;
 
         let p2_len  = self.snakes[1].body.len() as i32;
         let p1_head = self.snakes[0].head();
         let p1_tail = self.snakes[0].body.back().copied();
         let p1_dir  = self.snakes[0].dir;
 
-        // Project P1's head forward: in one CPU move period P1 moves
-        // p2_ht / p1_ht times (ratio of their thresholds).
+        // Project P1's head forward by how many moves P1 takes per P2 period.
+        // When P1 is boosting project further — it covers ground faster.
         let p1_ht = h_thresh(self.snakes[0].body.len());
-        let p1_steps = (p2_ht / p1_ht).max(1) as i32;
+        let p1_boost_mult = if self.snakes[0].boost_ticks > 0 { 2i32 } else { 1 };
+        let p1_steps = (p2_ht / p1_ht).max(1) as i32 * p1_boost_mult;
         let p1_proj = p1_head.map(|(phx, phy)| {
             let (pdx, pdy) = p1_dir;
             let fx = (phx as i32 + pdx * p1_steps).clamp(1, W as i32 - 2) as usize;
@@ -229,8 +230,7 @@ impl Game {
 
         for &(dx, dy) in &DIRS {
             if dx == -cdx && dy == -cdy { continue; }
-            if dx != 0 && !can_h    { continue; }
-            if dy != 0 && !allow_vert { continue; }
+            if dx != 0 && !can_h { continue; }
 
             let nx = hx as i32 + dx;
             let ny = hy as i32 + dy;
@@ -244,8 +244,6 @@ impl Game {
                 Cell::Empty | Cell::Food | Cell::Effect => {
                     // --- Universal safety layer ---
 
-                    // Accurate empty-space count (own body NOT included — it is a real
-                    // obstacle until the tail retreats past each segment).
                     let space = self.flood_fill(nx, ny) as i32;
 
                     // Entering a region smaller than own body is near-certain death.
@@ -253,7 +251,7 @@ impl Game {
                         -500_000 + space * 1_000
                     } else { 0 };
 
-                    // Penalise cells boxed in by own body (corridors / dead ends).
+                    // Penalise cells walled in by own body (corridors / dead ends).
                     let body_adj = DIRS.iter().filter(|&&(ddx, ddy)| {
                         let bx = nx as i32 + ddx;
                         let by = ny as i32 + ddy;
@@ -264,22 +262,23 @@ impl Game {
                     let body_penalty = body_adj * 400;
 
                     // Forward exits (excluding reverse): 0 = certain death, 1 = risky.
+                    // Include P1Head as blocked — stepping next to P1's head is dangerous.
                     let fwd_exits = DIRS.iter().filter(|&&(ddx, ddy)| {
                         if ddx == -dx && ddy == -dy { return false; }
                         let ex = nx as i32 + ddx;
                         let ey = ny as i32 + ddy;
                         ex > 0 && ey > 0 && ex < W as i32 - 1 && ey < H as i32 - 1
                             && !matches!(self.board[ey as usize][ex as usize],
-                                Cell::Wall | Cell::P1Body
+                                Cell::Wall | Cell::P1Head | Cell::P1Body
                                 | Cell::P2Body | Cell::P2Tail | Cell::P2Head)
                     }).count();
                     let dead_end_penalty = match fwd_exits {
                         0 => 300_000,
-                        1 =>  20_000,
+                        1 =>  35_000,
                         _ =>       0,
                     };
 
-                    // Penalise moving toward projected P1 head (head-on danger).
+                    // Penalise cells near P1's projected head.
                     let head_danger = p1_proj.map(|(phx, phy)| {
                         let d = (nx as i32 - phx as i32).abs()
                               + (ny as i32 - phy as i32).abs();
@@ -289,12 +288,11 @@ impl Game {
                     // Small bonus for continuing current direction (reduces jitter).
                     let continuation = if (dx, dy) == (cdx, cdy) { 25 } else { 0 };
 
-                    // --- Strategy objective (same space weight for both) ---
+                    // --- Strategy objective ---
                     let p2_tail = self.snakes[1].body.back().copied();
                     let objective = match strategy {
                         Strategy::Survive => {
                             // Follow own tail to stay in a loop.
-                            // Bonus activates within 10 cells of own tail tip; max 400.
                             let self_tail_d = p2_tail.map(|(tx, ty)| {
                                 (nx as i32 - tx as i32).abs()
                                     + (ny as i32 - ty as i32).abs()
@@ -302,15 +300,23 @@ impl Game {
                             let tail_bonus = (10 - self_tail_d).max(0) * 40;
                             space * 80 - head_danger + tail_bonus + continuation
                         }
+                        Strategy::Forage => {
+                            // Seek the nearest food pellet to grow back to safety.
+                            let food_d = self.nearest_food_dist(nx, ny);
+                            let food_pull = (25 - food_d).max(0) * 100;
+                            let food_cell = if self.board[ny][nx] == Cell::Food { 500 } else { 0 };
+                            space * 60 + food_pull + food_cell - head_danger + continuation
+                        }
                         Strategy::Hunt => {
-                            // Chase P1's tail; food is a useful bonus when nearby.
+                            // Chase P1's tail. Steep ramp at close range so the
+                            // kill pull dominates space-seeking when P1 is nearby.
                             let attack = p1_tail.map(|(tx, ty)| {
                                 let d = (nx as i32 - tx as i32).abs()
                                       + (ny as i32 - ty as i32).abs();
-                                (20 - d).max(0) * 25 // max 500
+                                (14 - d).max(0) * 75 // max 1050 when adjacent
                             }).unwrap_or(0);
                             let food_bonus = if self.board[ny][nx] == Cell::Food { 150 } else { 0 };
-                            space * 80 + attack + food_bonus - head_danger + continuation
+                            space * 70 + attack + food_bonus - head_danger + continuation
                         }
                     };
                     objective + pocket_penalty - body_penalty - dead_end_penalty
@@ -324,6 +330,39 @@ impl Game {
         }
 
         self.snakes[1].next_dir = best_dir;
+        self.ai_boost_decision();
+    }
+
+    // Activate boost only when the path ahead is clear and P1's tail is very close.
+    fn ai_boost_decision(&mut self) {
+        if self.snakes[1].boost_ticks > 0 { return; }
+        if self.over { return; }
+        if self.cpu_strategy != Strategy::Hunt { return; }
+
+        let len = self.snakes[1].body.len();
+        if len < 8 { return; } // still >= 6 after losing 2 segments
+
+        let Some((hx, hy)) = self.snakes[1].head() else { return; };
+        let Some((tx, ty)) = self.snakes[0].body.back().copied() else { return; };
+
+        let dist = (hx as i32 - tx as i32).abs() + (hy as i32 - ty as i32).abs();
+        if dist > 5 { return; }
+
+        // Direction is locked for 8 ticks during boost — verify the path is clear
+        // far enough ahead that P2 won't charge into P1's body or a wall.
+        let (bdx, bdy) = self.snakes[1].dir;
+        for step in 1..=5i32 {
+            let cx = hx as i32 + bdx * step;
+            let cy = hy as i32 + bdy * step;
+            if cx <= 0 || cy <= 0 || cx >= W as i32 - 1 || cy >= H as i32 - 1 { return; }
+            match self.board[cy as usize][cx as usize] {
+                Cell::Wall | Cell::P1Head | Cell::P1Body
+                | Cell::P2Body | Cell::P2Head => return,
+                _ => {}
+            }
+        }
+
+        self.activate_boost(1);
     }
 
     fn pick_strategy(&self) -> Strategy {
@@ -331,9 +370,27 @@ impl Game {
         let p2_len = self.snakes[1].body.len();
         let slower  = h_thresh(p2_len) > h_thresh(self.snakes[0].body.len());
         let p2_space = self.flood_fill(p2h.0, p2h.1) as i32;
-        // Wider safety margin when slower: less ability to escape tight spots.
         let safe_thr = if slower { 50 } else { 35 };
-        if p2_space < safe_thr { Strategy::Survive } else { Strategy::Hunt }
+        if p2_space < safe_thr {
+            Strategy::Survive
+        } else if p2_len < 6 {
+            Strategy::Forage
+        } else {
+            Strategy::Hunt
+        }
+    }
+
+    fn nearest_food_dist(&self, sx: usize, sy: usize) -> i32 {
+        let mut best = 999i32;
+        for y in 1..H - 1 {
+            for x in 1..W - 1 {
+                if self.board[y][x] == Cell::Food {
+                    let d = (sx as i32 - x as i32).abs() + (sy as i32 - y as i32).abs();
+                    if d < best { best = d; }
+                }
+            }
+        }
+        best
     }
 
     fn flood_fill(&self, sx: usize, sy: usize) -> usize {
@@ -915,7 +972,9 @@ impl Game {
         let p1_status = if self.snakes[0].alive {
             if self.snakes[0].boost_ticks > 0 { "[BOOST]".into() } else { String::new() }
         } else { "[DEAD]".into() };
-        let p2_status = if self.snakes[1].alive { String::new() } else { "[DEAD]".into() };
+        let p2_status = if self.snakes[1].alive {
+            if self.snakes[1].boost_ticks > 0 { "[BOOST]".into() } else { String::new() }
+        } else { "[DEAD]".into() };
         let left  = format!("P1:{}{} WASD", p1len, p1_status);
         let right = format!("CPU[{}] P2:{}{}", self.cpu_strategy.label(), p2len, p2_status);
         let title = "** SNAKE **";
