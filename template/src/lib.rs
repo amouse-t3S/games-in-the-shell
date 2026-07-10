@@ -92,19 +92,27 @@ struct Particle {
 
 impl Particle {
     fn glyph(&self) -> char {
-        // Fade sequence as the particle ages: bright → dim → gone
-        match self.life {
-            1 => '.',
-            2 if self.ch == '*' => '+',
-            _ => self.ch,
+        match self.ch {
+            // Explosion particles: * → + → .
+            '*' => match self.life { 1 => '.', 2 => '+', _ => '*' },
+            // Wither particles: ~ → - → , → .
+            '~' => match self.life { 1 => '.', 2 | 3 => ',', 4 | 5 => '-', _ => '~' },
+            _   => if self.life == 1 { '.' } else { self.ch },
         }
     }
+}
+
+struct DizzyAnim {
+    hx: usize,
+    hy: usize,
+    step: u32, // 0 = waiting for wither to clear; 1+ = active
 }
 
 struct DeathAnim {
     // Body segments queued for explosion in order, with cell type for re-painting.
     segments: VecDeque<(usize, usize, Cell)>,
     particles: Vec<Particle>,
+    dizzy: Option<DizzyAnim>, // post-starvation dizzy-and-collapse phase
 }
 
 struct Game {
@@ -423,9 +431,11 @@ impl Game {
 
         let adv = [self.try_advance(0), self.try_advance(1)];
 
-        let mut died     = [false; 2];
-        let mut attacked = [false; 2];
-        let mut ate_food = [false; 2];
+        let mut died           = [false; 2];
+        let mut attacked       = [false; 2];
+        let mut ate_food       = [false; 2];
+        let mut starved        = [false; 2];
+        let mut starvation_head: [Option<(usize, usize)>; 2] = [None; 2];
 
         // Head-to-head: both snakes move to the same cell
         if let (Advance::Move(x0, y0), Advance::Move(x1, y1)) = (&adv[0], &adv[1]) {
@@ -522,12 +532,15 @@ impl Game {
                     self.snakes[pi].move_count += 1;
                     if self.snakes[pi].move_count >= FOOD_DROP_INTERVAL {
                         self.snakes[pi].move_count = 0;
-                        // Drop food at tail tip; also pop one extra → snake shrinks by 1
+                        // Drop food at tail tip then always shrink by 1 → snake starves over time.
                         if let Some((tx, ty)) = self.snakes[pi].body.pop_back() {
                             self.board[ty][tx] = Cell::Food;
                         }
-                        if self.snakes[pi].body.len() > 2 {
-                            self.snakes[pi].body.pop_back();
+                        self.snakes[pi].body.pop_back(); // unconditional shrink
+                        if self.snakes[pi].body.is_empty() {
+                            died[pi]           = true;
+                            starved[pi]        = true;
+                            starvation_head[pi] = Some((nx, ny));
                         }
                     } else {
                         self.snakes[pi].body.pop_back(); // normal move, no food
@@ -545,13 +558,39 @@ impl Game {
 
         let has_death = died[0] || died[1] || won[0] || won[1];
 
-        // Collect dying snake segments before draw_snakes clears them.
-        // Crash victims explode head→tail; tail-attack victims explode tail→head.
+        // Starvation: scan the board NOW (before draw_snakes clears it) to collect
+        // the dying snake's visible cell positions for the wither animation.
+        // Crash/bite victims use a sequential explosion queue instead.
+        let mut wither_particles: Vec<Particle> = Vec::new();
+        let mut dizzy_anim: Option<DizzyAnim> = None;
         let anim_segs: VecDeque<(usize, usize, Cell)> = if has_death {
+            for pi in 0..2 {
+                if !starved[pi] { continue; }
+                for y in 1..H - 1 {
+                    for x in 1..W - 1 {
+                        let is_me = if pi == 0 {
+                            matches!(self.board[y][x], Cell::P1Head | Cell::P1Body | Cell::P1Tail)
+                        } else {
+                            matches!(self.board[y][x], Cell::P2Head | Cell::P2Body | Cell::P2Tail)
+                        };
+                        if is_me {
+                            wither_particles.push(Particle { x, y, ch: '~', life: 7 });
+                        }
+                    }
+                }
+                // Dizzy spawns at the position the head was moving into when it starved.
+                if dizzy_anim.is_none() {
+                    if let Some((hx, hy)) = starvation_head[pi] {
+                        dizzy_anim = Some(DizzyAnim { hx, hy, step: 0 });
+                    }
+                }
+            }
+
             let mut seqs: [Vec<(usize, usize, Cell)>; 2] = [Vec::new(), Vec::new()];
             for pi in 0..2 {
+                if starved[pi] { continue; } // starvation handled above
                 let crash_victim  = died[pi];
-                let attack_victim = won[1 - pi]; // pi is the victim when the other snake won
+                let attack_victim = won[1 - pi];
                 if !crash_victim && !attack_victim { continue; }
                 let snake = &self.snakes[pi];
                 let len = snake.body.len();
@@ -565,14 +604,12 @@ impl Game {
                     };
                     (x, y, cell)
                 }).collect();
-                // Pure attack victim: tail first.  Crash victim (even if also attacked): head first.
                 seqs[pi] = if attack_victim && !crash_victim {
                     cells.into_iter().rev().collect()
                 } else {
                     cells
                 };
             }
-            // Interleave both sequences for simultaneous dual-death animations.
             let max_len = seqs[0].len().max(seqs[1].len());
             let mut out = VecDeque::new();
             for i in 0..max_len {
@@ -612,7 +649,7 @@ impl Game {
             for &(sx, sy, cell) in &anim_segs {
                 if sy < H && sx < W { self.board[sy][sx] = cell; }
             }
-            self.death_anim = Some(DeathAnim { segments: anim_segs, particles: Vec::new() });
+            self.death_anim = Some(DeathAnim { segments: anim_segs, particles: wither_particles, dizzy: dizzy_anim });
         }
     }
 
@@ -655,12 +692,49 @@ impl Game {
             }
         }
 
+        // Once explosion/wither clears, run the dizzy-and-collapse phase.
         if anim.segments.is_empty() && anim.particles.is_empty() {
+            if let Some(ref mut dizzy) = anim.dizzy {
+                if dizzy.step == 0 { dizzy.step = 1; }
+                let step = dizzy.step;
+                let (hx, hy) = (dizzy.hx, dizzy.hy);
+                Game::spawn_dizzy(&mut anim.particles, hx, hy, step);
+                dizzy.step += 1;
+            }
+            if anim.dizzy.as_ref().map(|d| d.step > 1).unwrap_or(false) {
+                anim.dizzy = None;
+            }
+        }
+
+        if anim.segments.is_empty() && anim.particles.is_empty() && anim.dizzy.is_none() {
             self.over = true;
             self.winner = self.pending_winner;
         } else {
             self.death_anim = Some(anim);
         }
+    }
+
+    fn spawn_dizzy(particles: &mut Vec<Particle>, hx: usize, hy: usize, step: u32) {
+        if step != 1 { return; }
+        let hxi = hx as i32;
+        let hyi = hy as i32;
+        macro_rules! add {
+            ($ox:expr, $oy:expr, $ch:expr, $life:expr) => {
+                particles.push(Particle {
+                    x: (hxi + $ox).clamp(1, W as i32 - 2) as usize,
+                    y: (hyi + $oy).clamp(1, H as i32 - 2) as usize,
+                    ch: $ch,
+                    life: $life,
+                });
+            }
+        }
+        // Pop-and-punk burst: bright center + 8-point ring + outer sparks
+        add!(0, 0, '*', 6);
+        for &(ox, oy) in &[(2i32,0i32),(2,-1),(0,-1),(-2,-1),(-2,0),(-2,1),(0,1),(2,1)] {
+            add!(ox, oy, '+', 4);
+        }
+        add!(0, -2, '.', 2); add!(0, 2, '.', 2);
+        add!(4, 0, '.', 2); add!(-4, 0, '.', 2);
     }
 
     // Accumulator-based speed: each tick adds SPEED_INC to h_accum/v_accum.
@@ -701,6 +775,31 @@ impl Game {
             }
         }
 
+        // Blink snakes nearing starvation; period shrinks as length drops → escalating urgency.
+        // Blink warning: long visible / short hidden when tail is longer;
+        // as length drops the hidden fraction grows → escalating urgency.
+        if self.death_anim.is_none() {
+            for snake in &self.snakes {
+                if !snake.alive || snake.body.len() >= 10 { continue; }
+                let (period, off) = match snake.body.len() {
+                    1 => (2,  1), // 50% hidden (fast strobe)
+                    2 => (3,  2), // 67% hidden
+                    3 => (4,  2), // 50% hidden
+                    4 => (6,  1), // 17% hidden
+                    5 => (8,  1), // 12% hidden
+                    6 => (10, 1), // 10% hidden
+                    7 => (12, 1), //  8% hidden
+                    8 => (14, 1), //  7% hidden
+                    _ => (16, 1), //  6% hidden (len 9, barely a flicker)
+                };
+                if self.tick % period < off {
+                    for &(x, y) in &snake.body {
+                        if y < H && x < W { rows[y][x] = ' '; }
+                    }
+                }
+            }
+        }
+
         let p1len = self.snakes[0].body.len();
         let p2len = self.snakes[1].body.len();
         let p1_status = if self.snakes[0].alive { String::new() } else { "[DEAD]".into() };
@@ -720,7 +819,7 @@ impl Game {
         };
 
         rows[H - 1] = {
-            let s = "P1: W/A/S/D  |  eat o (P2 tail) +5  |  eat . (food) +2  |  R=restart  Q=quit";
+            let s = "P1: W/A/S/D  |  tail +5  |  food +2  |  len<10=STARVING |  R=restart  Q=quit";
             let mut buf = vec![' '; W];
             for (i, c) in s.chars().enumerate() { if i < W { buf[i] = c; } }
             buf
@@ -946,5 +1045,40 @@ mod tests {
         g.step();
 
         assert!(!g.snakes[0].alive, "P1 should die entering its own body");
+    }
+
+    #[test]
+    fn starvation_triggers_dizzy_anim_and_reaches_game_over() {
+        let mut g = make_game();
+
+        // P1: single-cell body, one tick from triggering food drop → starvation
+        g.clear_snakes();
+        g.snakes[0].body.clear();
+        g.snakes[0].body.push_back((40, 12));
+        g.snakes[0].dir = (1, 0);
+        g.snakes[0].next_dir = (1, 0);
+        g.snakes[0].move_count = FOOD_DROP_INTERVAL - 1;
+        g.snakes[0].h_accum = h_thresh(1); // fires on next tick
+
+        // P2: parked far away, won't interfere
+        g.snakes[1].body.clear();
+        for i in 0..INIT_LEN { g.snakes[1].body.push_back((60 - i, 20)); }
+        g.snakes[1].dir = (1, 0);
+        g.snakes[1].next_dir = (1, 0);
+        g.snakes[1].h_accum = 0;
+
+        g.draw_snakes();
+        g.step(); // P1 moves, food drop fires, body empties → starved
+
+        assert!(!g.snakes[0].alive, "P1 should have starved");
+        assert!(g.death_anim.is_some(), "death_anim must be set after starvation");
+        assert!(g.death_anim.as_ref().unwrap().dizzy.is_some(), "dizzy phase must be queued");
+
+        // Run animation to completion — should terminate within a few hundred ticks
+        for _ in 0..300 {
+            if g.over { break; }
+            g.step();
+        }
+        assert!(g.over, "game must reach over=true after starvation animation");
     }
 }
