@@ -112,6 +112,8 @@
     #terminal {
       display: block;
       filter: contrast(1.05) brightness(0.92);
+      pointer-events: none;
+      user-select: none;
     }
 
     /* Hide xterm scrollbar */
@@ -179,6 +181,127 @@
       box-shadow: 0 4px 12px rgba(0,0,0,0.7);
     }
 
+    /* ── Controller ── */
+    .ctrl-area {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 16px;
+      padding: 12px 24px;
+      background: linear-gradient(160deg, #2c2c2c 0%, #1a1a1a 60%, #0f0f0f 100%);
+      border-radius: 12px;
+      border: 1px solid #333;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.05),
+        inset 0 -2px 4px rgba(0,0,0,0.5),
+        0 6px 20px rgba(0,0,0,0.7);
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+
+    .dpad-wrap {
+      filter: drop-shadow(0 3px 0 #080808);
+    }
+
+    .dpad {
+      display: grid;
+      grid-template-columns: repeat(3, var(--btn-size, 44px));
+      grid-template-rows: repeat(3, var(--btn-size, 44px));
+      clip-path: polygon(
+        33.33% 0%,   66.67% 0%,
+        66.67% 33.33%, 100%   33.33%,
+        100%   66.67%, 66.67% 66.67%,
+        66.67% 100%,  33.33% 100%,
+        33.33% 66.67%, 0%    66.67%,
+        0%    33.33%, 33.33% 33.33%
+      );
+    }
+
+    .dpad-btn {
+      background: linear-gradient(180deg, #2a2a2a 0%, #181818 100%);
+      border: none;
+      color: #00b82c;
+      font-family: 'Terminus', monospace;
+      font-size: calc(var(--btn-size, 44px) * 0.32);
+      cursor: pointer;
+      touch-action: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .dpad-up    { border-radius: 6px 6px 0 0; border-bottom: 1px solid #111; }
+    .dpad-left  { border-radius: 6px 0 0 6px; border-right:  1px solid #111; }
+    .dpad-center {
+      background: linear-gradient(180deg, #2a2a2a 0%, #181818 100%);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .dpad-center::after {
+      content: '';
+      width: calc(var(--btn-size, 44px) * 0.23);
+      height: calc(var(--btn-size, 44px) * 0.23);
+      border-radius: 50%;
+      background: #111;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.9);
+    }
+    .dpad-right { border-radius: 0 6px 6px 0; border-left:   1px solid #111; }
+    .dpad-down  { border-radius: 0 0 6px 6px; border-top:    1px solid #111; }
+
+    .dpad-btn:active {
+      background: linear-gradient(180deg, #1a1a1a 0%, #0e0e0e 100%);
+      color: #00e838;
+    }
+
+    .act-btn {
+      width: calc(var(--btn-size, 44px) * 1.1);
+      height: calc(var(--btn-size, 44px) * 1.1);
+      background: linear-gradient(180deg, #1a2a1a 0%, #0d1a0d 100%);
+      border: 1px solid #1e3a1e;
+      border-radius: 50%;
+      color: #00b82c;
+      font-family: 'Terminus', monospace;
+      font-size: calc(var(--btn-size, 44px) * 0.27);
+      font-weight: bold;
+      cursor: pointer;
+      box-shadow: 0 3px 0 #050f05, inset 0 1px 0 rgba(0,255,65,0.06), 0 0 8px rgba(0,255,65,0.08);
+      touch-action: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .act-btn:active {
+      box-shadow: inset 0 3px 5px rgba(0,0,0,0.8);
+      transform: translateY(2px);
+      color: #00ff41;
+    }
+
+    /* ── Responsive layout ── */
+
+    /* Desktop ≥ 1024px: keyboard-only, no controller */
+    @media (min-width: 1024px) {
+      .ctrl-area { display: none; }
+    }
+
+    /* Landscape mobile < 1024px: monitor left, controller right */
+    @media (orientation: landscape) and (max-width: 1023px) {
+      body { flex-direction: row; align-items: center; }
+      .ctrl-area {
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 0;
+        margin-left: 16px;
+        padding: 16px 12px;
+        width: auto !important;
+      }
+    }
+
     /* ── Animations ── */
     @keyframes flicker {
       0%   { opacity: 1; }
@@ -214,21 +337,92 @@
     <div class="stand-neck"></div>
     <div class="stand-base"></div>
   </div>
+  <div class="ctrl-area" id="ctrl-area">
+    <div class="dpad-wrap">
+      <div class="dpad">
+        <div></div>
+        <button class="dpad-btn dpad-up"    id="btn-up">▲</button>
+        <div></div>
+        <button class="dpad-btn dpad-left"  id="btn-left">◀</button>
+        <div class="dpad-center"></div>
+        <button class="dpad-btn dpad-right" id="btn-right">▶</button>
+        <div></div>
+        <button class="dpad-btn dpad-down"  id="btn-down">▼</button>
+        <div></div>
+      </div>
+    </div>
+    <button class="act-btn" id="btn-reset">R</button>
+  </div>
 
   <script type="module">
     import init, { get_screen, key, reset, game_loop, Button } from './pkg/template.js';
     await init();
 
-    // Reserve space for bezel padding + bottom strip + stand
-    const bezelPadW = 44;   // 22px left + 22px right
-    const bezelPadH = 34 + 30; // 20px top + 14px bottom strip + stand
-    const w = window.innerWidth  - bezelPadW;
-    const h = window.innerHeight - bezelPadH;
-    const fs = Math.min(18, Math.floor(Math.min(w / 80 * 2, h / 24)));
+    // ── Responsive sizing ─────────────────────────────────────────────────────
+    const vpW = window.innerWidth;
+    const vpH = window.innerHeight;
+    const bezelPadW   = 44;   // bezel left + right padding (22 × 2)
+    const monitorFixH = 64;   // bezel top/bottom + stand
+    const ctrlPadV    = 24;   // controller housing top + bottom padding (12 × 2)
+    const ctrlPadH    = 48;   // controller housing left + right padding (24 × 2)
 
-    const d = document.getElementById("terminal");
-    d.style.width  = (fs * 40) + "px";
-    d.style.height = (fs * 24) + "px";
+    const isDesktop   = vpW >= 1024;
+    const isLandscape = !isDesktop && vpW > vpH;
+
+    let fs, btnSize, ctrlW, ctrlH;
+
+    if (isDesktop) {
+      // No controller — fill viewport
+      fs = Math.min(18, Math.floor(Math.min(
+        (vpW - bezelPadW) / 40,
+        (vpH - monitorFixH) / 24
+      )));
+      btnSize = ctrlW = ctrlH = 0;
+
+    } else if (isLandscape) {
+      // Controller beside monitor; height drives fs
+      const ctrlGap = 16;
+
+      fs = Math.min(18, Math.floor((vpH - monitorFixH) / 24));
+      while (fs > 4) {
+        const remW = vpW - (fs * 40 + bezelPadW) - ctrlGap - ctrlPadH;
+        if (remW >= 36 * 3) break;
+        fs--;
+      }
+      const remW    = vpW - (fs * 40 + bezelPadW) - ctrlGap - ctrlPadH;
+      const maxBtnH = Math.floor((vpH - monitorFixH) / 3);
+      btnSize = Math.max(36, Math.min(Math.floor(remW / 3), maxBtnH));
+      ctrlW = ctrlH = 0; // sized by CSS / content in landscape
+
+    } else {
+      // Portrait — controller below with same 80:24 aspect ratio as the terminal
+      const ctrlGap = 12;
+
+      fs = Math.min(18, Math.floor((vpW - bezelPadW) / 40));
+      while (fs > 4) {
+        ctrlW = fs * 40 + bezelPadW;          // controller matches monitor width
+        ctrlH = Math.round(ctrlW * 24 / 80);  // 80:24 aspect ratio
+        if (monitorFixH + fs * 24 + ctrlGap + ctrlH <= vpH) break;
+        fs--;
+      }
+      ctrlW   = fs * 40 + bezelPadW;
+      ctrlH   = Math.round(ctrlW * 24 / 80);
+      btnSize = Math.max(36, Math.floor((ctrlH - ctrlPadV) / 3));
+    }
+
+    document.documentElement.style.setProperty('--btn-size', btnSize + 'px');
+
+    const d = document.getElementById('terminal');
+    d.style.width  = (fs * 40) + 'px';
+    d.style.height = (fs * 24) + 'px';
+
+    if (!isDesktop) {
+      const ctrl = document.getElementById('ctrl-area');
+      if (!isLandscape) {
+        ctrl.style.width  = ctrlW + 'px';
+        ctrl.style.height = ctrlH + 'px';
+      }
+    }
 
     const term = new Terminal({
       cols: 80,
@@ -256,6 +450,7 @@
     // Blur the terminal's internal textarea so the page captures keys immediately
     // without requiring a click, via the window-level keydown listener below.
     if (term.textarea) term.textarea.blur();
+    term.onSelectionChange(() => term.clearSelection());
 
     const decoder = new TextDecoder();
 
@@ -271,6 +466,17 @@
       game_loop();
       render();
     }, 67);
+
+    function ctrl(id, action) {
+      const el = document.getElementById(id);
+      el.addEventListener('touchstart', e => { e.preventDefault(); action(); }, { passive: false });
+      el.addEventListener('mousedown',  e => { e.preventDefault(); action(); });
+    }
+    ctrl('btn-up',    () => key(Button.Up));
+    ctrl('btn-left',  () => key(Button.Left));
+    ctrl('btn-right', () => key(Button.Right));
+    ctrl('btn-down',  () => key(Button.Down));
+    ctrl('btn-reset', () => { reset(); render(); });
 
     window.addEventListener('keydown', (e) => {
       e.preventDefault();
