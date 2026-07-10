@@ -83,6 +83,30 @@ enum Advance {
     Crash,
 }
 
+struct Particle {
+    x: usize,
+    y: usize,
+    ch: char,
+    life: u32, // ticks remaining; removed at 0
+}
+
+impl Particle {
+    fn glyph(&self) -> char {
+        // Fade sequence as the particle ages: bright → dim → gone
+        match self.life {
+            1 => '.',
+            2 if self.ch == '*' => '+',
+            _ => self.ch,
+        }
+    }
+}
+
+struct DeathAnim {
+    // Body segments queued for explosion in order, with cell type for re-painting.
+    segments: VecDeque<(usize, usize, Cell)>,
+    particles: Vec<Particle>,
+}
+
 struct Game {
     board: Vec<Vec<Cell>>,
     snakes: [Snake; 2],
@@ -92,6 +116,8 @@ struct Game {
     ai_enabled: bool,
     cpu_strategy: Strategy,
     effects: Vec<((usize, usize), u32)>, // (cell position, expiry tick)
+    death_anim: Option<DeathAnim>,
+    pending_winner: i8,
 }
 
 impl Game {
@@ -134,6 +160,8 @@ impl Game {
             ai_enabled: true,
             cpu_strategy: Strategy::Hunt,
             effects: Vec::new(),
+            death_anim: None,
+            pending_winner: -1,
         };
         game.draw_snakes();
         game
@@ -353,6 +381,12 @@ impl Game {
     fn step(&mut self) {
         if self.over { return; }
 
+        // Death animation in progress: advance it and skip normal game logic.
+        if self.death_anim.is_some() {
+            self.advance_death_anim();
+            return;
+        }
+
         // Expire break-effect cells that have been visible long enough.
         self.effects.retain(|&((ex, ey), expiry)| {
             if self.tick >= expiry {
@@ -470,16 +504,8 @@ impl Game {
             }
         }
 
-        // A successful tail attack ends the game immediately.
+        // Tail attack outcome — winner resolved after animation.
         let won = [attacked[0] && !died[0], attacked[1] && !died[1]];
-        if won[0] || won[1] {
-            self.over = true;
-            self.winner = match (won[0], won[1]) {
-                (true, false) => 0,
-                (false, true) => 1,
-                _ => 2, // simultaneous attacks
-            };
-        }
 
         // Move snakes (snake style: push new head, pop tail unless growing)
         for pi in 0..2 {
@@ -517,16 +543,54 @@ impl Game {
             if died[pi] { self.snakes[pi].alive = false; }
         }
 
-        let p1a = self.snakes[0].alive;
-        let p2a = self.snakes[1].alive;
-        if (!p1a || !p2a) && !self.over {
-            self.over = true;
-            self.winner = match (p1a, p2a) {
-                (true, false) => 0,
-                (false, true) => 1,
-                _ => 2,
-            };
-        }
+        let has_death = died[0] || died[1] || won[0] || won[1];
+
+        // Collect dying snake segments before draw_snakes clears them.
+        // Crash victims explode head→tail; tail-attack victims explode tail→head.
+        let anim_segs: VecDeque<(usize, usize, Cell)> = if has_death {
+            let mut seqs: [Vec<(usize, usize, Cell)>; 2] = [Vec::new(), Vec::new()];
+            for pi in 0..2 {
+                let crash_victim  = died[pi];
+                let attack_victim = won[1 - pi]; // pi is the victim when the other snake won
+                if !crash_victim && !attack_victim { continue; }
+                let snake = &self.snakes[pi];
+                let len = snake.body.len();
+                let cells: Vec<_> = snake.body.iter().enumerate().map(|(i, &(x, y))| {
+                    let cell = if i == 0 {
+                        if pi == 0 { Cell::P1Head } else { Cell::P2Head }
+                    } else if i == len - 1 {
+                        if pi == 0 { Cell::P1Tail } else { Cell::P2Tail }
+                    } else {
+                        if pi == 0 { Cell::P1Body } else { Cell::P2Body }
+                    };
+                    (x, y, cell)
+                }).collect();
+                // Pure attack victim: tail first.  Crash victim (even if also attacked): head first.
+                seqs[pi] = if attack_victim && !crash_victim {
+                    cells.into_iter().rev().collect()
+                } else {
+                    cells
+                };
+            }
+            // Interleave both sequences for simultaneous dual-death animations.
+            let max_len = seqs[0].len().max(seqs[1].len());
+            let mut out = VecDeque::new();
+            for i in 0..max_len {
+                if let Some(&s) = seqs[0].get(i) { out.push_back(s); }
+                if let Some(&s) = seqs[1].get(i) { out.push_back(s); }
+            }
+            out
+        } else {
+            VecDeque::new()
+        };
+
+        let pending_winner = if won[0] || won[1] {
+            match (won[0], won[1]) { (true, false) => 0i8, (false, true) => 1, _ => 2 }
+        } else {
+            match (self.snakes[0].alive, self.snakes[1].alive) {
+                (true, false) => 0, (false, true) => 1, _ => 2
+            }
+        };
 
         self.draw_snakes();
 
@@ -534,11 +598,68 @@ impl Game {
         // they aren't cleared by clear_snakes).
         for pos in attack_pos.iter().flatten() {
             let (ex, ey) = *pos;
-            // Only mark if the cell is now empty (snake didn't immediately move there).
             if matches!(self.board[ey][ex], Cell::Empty) {
                 self.board[ey][ex] = Cell::Effect;
                 self.effects.push(((ex, ey), self.tick + EFFECT_TICKS));
             }
+        }
+
+        if has_death {
+            self.pending_winner = pending_winner;
+            // Re-paint dying snake cells on the board so the animation can clear them
+            // segment by segment (crash victims were wiped by draw_snakes; attack victims
+            // are still alive=true and were redrawn — re-painting is harmless for them).
+            for &(sx, sy, cell) in &anim_segs {
+                if sy < H && sx < W { self.board[sy][sx] = cell; }
+            }
+            self.death_anim = Some(DeathAnim { segments: anim_segs, particles: Vec::new() });
+        }
+    }
+
+    fn advance_death_anim(&mut self) {
+        let mut anim = self.death_anim.take().unwrap();
+
+        // Age existing particles and remove expired ones.
+        for p in anim.particles.iter_mut() {
+            p.life = p.life.saturating_sub(1);
+        }
+        anim.particles.retain(|p| p.life > 0);
+
+        // Explode the next segment(s).
+        let segs_per_step = if anim.segments.len() > 20 { 2 } else { 1 };
+        for _ in 0..segs_per_step {
+            let Some((sx, sy, _)) = anim.segments.pop_front() else { break; };
+
+            // Clear the segment from the board.
+            if sy < H && sx < W
+                && matches!(self.board[sy][sx],
+                    Cell::P1Head | Cell::P1Body | Cell::P1Tail
+                    | Cell::P2Head | Cell::P2Body | Cell::P2Tail)
+            {
+                self.board[sy][sx] = Cell::Empty;
+            }
+
+            // Bright burst at the exploding segment.
+            anim.particles.push(Particle { x: sx, y: sy, ch: '*', life: 4 });
+
+            // Scatter sparks into adjacent empty cells.
+            for &(ddx, ddy) in &DIRS {
+                let px = sx as i32 + ddx;
+                let py = sy as i32 + ddy;
+                if px > 0 && py > 0 && px < W as i32 - 1 && py < H as i32 - 1 {
+                    let (px, py) = (px as usize, py as usize);
+                    if matches!(self.board[py][px], Cell::Empty | Cell::Food | Cell::Effect) {
+                        anim.particles.push(Particle { x: px, y: py, ch: '+', life: 2 });
+                    }
+                }
+            }
+        }
+
+        if anim.segments.is_empty() && anim.particles.is_empty() {
+            self.over = true;
+            self.winner = self.pending_winner;
+        } else {
+            self.death_anim = Some(anim);
         }
     }
 
@@ -572,6 +693,13 @@ impl Game {
         let mut rows: Vec<Vec<char>> = self.board.iter()
             .map(|row| row.iter().map(|&c| cell_char(c)).collect())
             .collect();
+
+        // Overlay death-animation particles on top of the board.
+        if let Some(ref anim) = self.death_anim {
+            for p in &anim.particles {
+                if p.y < H && p.x < W { rows[p.y][p.x] = p.glyph(); }
+            }
+        }
 
         let p1len = self.snakes[0].body.len();
         let p2len = self.snakes[1].body.len();
@@ -733,6 +861,8 @@ mod tests {
 
         assert!(!g.snakes[0].alive, "P1 should die in head-to-head");
         assert!(!g.snakes[1].alive, "P2 should die in head-to-head");
+        // Winner is set after the death animation completes.
+        for _ in 0..200 { if g.over { break; } g.step(); }
         assert_eq!(g.winner, 2, "should be a draw");
     }
 
@@ -780,8 +910,10 @@ mod tests {
         assert!(g.snakes[1].alive,  "P2 survives being attacked");
         assert!(g.snakes[0].grow_pending > 0, "P1 gains pending growth");
         assert_eq!(g.snakes[1].body.len(), p2_before - 1, "P2 shrinks by 1");
-        assert!(g.over,           "game ends on successful attack");
-        assert_eq!(g.winner, 0,   "P1 wins by attack");
+        // Game over and winner are set after the death animation completes.
+        for _ in 0..200 { if g.over { break; } g.step(); }
+        assert!(g.over,         "game ends on successful attack");
+        assert_eq!(g.winner, 0, "P1 wins by attack");
     }
 
     #[test]
