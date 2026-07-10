@@ -1,41 +1,229 @@
 <!doctype html>
 <html>
-
 <head>
-  <meta name="viewport"
-    content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1, shrink-to-fit=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <link rel="preload" href="./font/TerminusTTF-4.49.3.ttf" as="font" type="font/ttf" crossorigin="anonymous">
   <link rel="stylesheet" href="xterm/css/xterm.css" />
   <script src="xterm/lib/xterm.js"></script>
-  <title>TRON — Games in the Shell</title>
-
+  <title>SNAKE-80</title>
   <style>
     @font-face {
       font-family: 'Terminus';
       src: url(./font/TerminusTTF-4.49.3.ttf);
+      font-display: block;
     }
 
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      padding: 0;
-      margin: 0;
       width: 100vw;
       height: 100svh;
       overflow: hidden;
-      background-color: #111;
-      display: grid;
-      place-items: center;
+      background: radial-gradient(ellipse at 50% 30%, #1c1c1c 0%, #080808 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Monitor body ── */
+    .monitor {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      filter: drop-shadow(0 24px 48px rgba(0,0,0,0.9));
+    }
+
+    .bezel {
+      background: linear-gradient(160deg, #2c2c2c 0%, #1a1a1a 60%, #0f0f0f 100%);
+      border-radius: 10px 10px 6px 6px;
+      padding: 20px 22px 14px;
+      border: 1px solid #3a3a3a;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.06),
+        inset 0 -2px 4px rgba(0,0,0,0.6),
+        0 2px 0 #111;
+      position: relative;
+    }
+
+    /* ── CRT screen area ── */
+    .screen-wrap {
+      position: relative;
+      border-radius: 4px;
+      margin: 2px;
+      padding: 4px;
+      /* recessed screen inset */
+      box-shadow:
+        inset 0 0 0 2px #0a0a0a,
+        inset 0 0 0 4px #222,
+        inset 0 0 30px rgba(0,0,0,0.95),
+        0 0 30px rgba(0,255,65,0.08);
+      overflow: hidden;
+      animation: flicker 10s ease-in-out infinite;
+    }
+
+    /* Scanlines */
+    .screen-wrap::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 1px,
+        rgba(0,0,0,0.18) 1px,
+        rgba(0,0,0,0.18) 2px
+      );
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* Vignette */
+    .screen-wrap::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(
+        ellipse at 50% 50%,
+        transparent 55%,
+        rgba(0,0,0,0.55) 100%
+      );
+      z-index: 11;
+      pointer-events: none;
+    }
+
+    /* Glare streak */
+    .glare {
+      position: absolute;
+      top: 4px;
+      left: 10%;
+      width: 30%;
+      height: 35%;
+      background: linear-gradient(
+        135deg,
+        rgba(255,255,255,0.025) 0%,
+        transparent 60%
+      );
+      border-radius: 50%;
+      z-index: 12;
+      pointer-events: none;
+    }
+
+    #terminal {
+      display: block;
+      filter: contrast(1.05) brightness(0.92);
+    }
+
+    /* Hide xterm scrollbar */
+    .xterm-viewport::-webkit-scrollbar { display: none; }
+    .xterm-viewport { scrollbar-width: none; }
+
+    /* ── Bezel bottom strip ── */
+    .bezel-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 10px;
+      padding-left: 2px;
+      padding-right: 2px;
+    }
+
+    .brand {
+      font-family: 'Terminus', monospace;
+      font-size: 10px;
+      letter-spacing: 4px;
+      color: #3a3a3a;
+      text-transform: uppercase;
+      user-select: none;
+    }
+
+    .power-area {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .power-label {
+      font-family: 'Terminus', monospace;
+      font-size: 8px;
+      letter-spacing: 2px;
+      color: #2e2e2e;
+      user-select: none;
+    }
+
+    .power-led {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #00cc33;
+      box-shadow: 0 0 5px #00ff41, 0 0 10px rgba(0,255,65,0.5);
+      animation: led-pulse 4s ease-in-out infinite;
+    }
+
+    /* ── Monitor stand ── */
+    .stand-neck {
+      width: 52px;
+      height: 18px;
+      background: linear-gradient(to bottom, #1c1c1c, #131313);
+      border-left: 1px solid #222;
+      border-right: 1px solid #222;
+    }
+
+    .stand-base {
+      width: 160px;
+      height: 12px;
+      background: linear-gradient(160deg, #222 0%, #121212 100%);
+      border-radius: 0 0 8px 8px;
+      border: 1px solid #2a2a2a;
+      border-top: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.7);
+    }
+
+    /* ── Animations ── */
+    @keyframes flicker {
+      0%   { opacity: 1; }
+      89%  { opacity: 1; }
+      90%  { opacity: 0.96; }
+      91%  { opacity: 1; }
+      95%  { opacity: 0.98; }
+      96%  { opacity: 1; }
+      100% { opacity: 1; }
+    }
+
+    @keyframes led-pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.65; }
     }
   </style>
 </head>
-
 <body>
-  <div id="terminal"></div>
+  <div class="monitor">
+    <div class="bezel">
+      <div class="screen-wrap">
+        <div class="glare"></div>
+        <div id="terminal"></div>
+      </div>
+      <div class="bezel-bottom">
+        <div class="brand">TERMINATION&nbsp;80</div>
+        <div class="power-area">
+          <div class="power-label">PWR</div>
+          <div class="power-led"></div>
+        </div>
+      </div>
+    </div>
+    <div class="stand-neck"></div>
+    <div class="stand-base"></div>
+  </div>
 
   <script type="module">
     import init, { get_screen, key, reset, game_loop, Button } from './pkg/template.js';
     await init();
 
-    const w = window.innerWidth, h = window.innerHeight;
+    // Reserve space for bezel padding + bottom strip + stand
+    const bezelPadW = 44;   // 22px left + 22px right
+    const bezelPadH = 34 + 30; // 20px top + 14px bottom strip + stand
+    const w = window.innerWidth  - bezelPadW;
+    const h = window.innerHeight - bezelPadH;
     const fs = Math.min(18, Math.floor(Math.min(w / 80 * 2, h / 24)));
 
     const d = document.getElementById("terminal");
@@ -53,11 +241,21 @@
       cursorStyle: 'block',
       cursorBlink: false,
       theme: {
-        background: '#000',
-        foreground: '#ccc',
+        background: '#050f05',
+        foreground: '#00e838',
+        cursor:     '#00ff41',
+        black:          '#050f05',
+        brightBlack:    '#1a3a1a',
+        white:          '#00e838',
+        brightWhite:    '#00ff65',
       },
     });
+    // Wait for Terminus to load before opening xterm — otherwise it falls back to monospace.
+    await document.fonts.load(`${fs}px Terminus`);
     term.open(d);
+    // Blur the terminal's internal textarea so the page captures keys immediately
+    // without requiring a click, via the window-level keydown listener below.
+    if (term.textarea) term.textarea.blur();
 
     const decoder = new TextDecoder();
 
@@ -67,35 +265,23 @@
       term.write('\x1b[H\x1b[?25l' + text);
     }
 
-    // Initial render
     render();
 
-    // Game loop: ~15 FPS
     setInterval(() => {
       game_loop();
       render();
     }, 67);
 
-    // Keyboard input
-    term.onKey(({ key: k, domEvent }) => {
-      const code = domEvent.code;
-      domEvent.preventDefault();
-      switch (code) {
-        // Player 1: WASD
+    window.addEventListener('keydown', (e) => {
+      e.preventDefault();
+      switch (e.code) {
         case 'KeyW': key(Button.Up);    break;
         case 'KeyD': key(Button.Right); break;
         case 'KeyS': key(Button.Down);  break;
         case 'KeyA': key(Button.Left);  break;
-        // Player 2: IJKL
-        case 'KeyI': key(Button.North); break;
-        case 'KeyL': key(Button.East);  break;
-        case 'KeyK': key(Button.South); break;
-        case 'KeyJ': key(Button.West);  break;
-        // Restart / quit
         case 'KeyR': reset(); render(); break;
       }
     });
   </script>
 </body>
-
 </html>
