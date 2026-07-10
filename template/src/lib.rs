@@ -585,7 +585,8 @@ impl Game {
         }
 
         // Tail attack outcome — winner resolved after animation.
-        let won = [attacked[0] && !died[0], attacked[1] && !died[1]];
+        // mut because the boost extra step may also register a tail attack.
+        let mut won = [attacked[0] && !died[0], attacked[1] && !died[1]];
 
         // Move snakes (snake style: push new head, pop tail unless growing)
         for pi in 0..2 {
@@ -640,7 +641,9 @@ impl Game {
                     // Extra horizontal half-step on alternate boost ticks → 1.5× rate.
                     // pre_boost 8,6,4,2 fire the extra step (4 of 8 ticks) = 12 moves total.
                     let (mdx, _) = self.snakes[pi].dir;
-                    if mdx != 0 && pre_boost % 2 == 0 && !died[pi] {
+                    // Also skip if this snake already won via the main step — firing the
+                    // extra step would advance into the opponent's body and kill the winner.
+                    if mdx != 0 && pre_boost % 2 == 0 && !died[pi] && !won[pi] {
                         if let Some((hx, hy)) = self.snakes[pi].head() {
                             let nx2 = hx as i32 + mdx;
                             if nx2 <= 0 || nx2 >= W as i32 - 1 {
@@ -648,13 +651,17 @@ impl Game {
                             } else {
                                 let (nx2u, ny2u) = (nx2 as usize, hy);
                                 let cell2 = self.board[ny2u][nx2u];
-                                // Mirror the main collision logic for the extra step.
+                                let opp = 1 - pi;
+                                let opp_tail_cell = if pi == 0 { Cell::P2Tail } else { Cell::P1Tail };
+                                let opp_tail_stays = !matches!(adv[opp], Advance::Move(..))
+                                    || self.snakes[opp].grow_pending > 0;
+                                // Opponent's stationary tail → tail attack, not a crash.
+                                let tail_attack = cell2 == opp_tail_cell && opp_tail_stays;
                                 let crash = match cell2 {
+                                    _ if tail_attack => false,
                                     Cell::Wall | Cell::P1Body | Cell::P2Body => true,
-                                    // Head is only lethal when the opponent is not moving away.
                                     Cell::P1Head => pi != 0 && !matches!(adv[0], Advance::Move(..)),
                                     Cell::P2Head => pi != 1 && !matches!(adv[1], Advance::Move(..)),
-                                    // Tail is lethal when it stays (owner stationary or growing).
                                     Cell::P1Tail => !matches!(adv[0], Advance::Move(..))
                                         || self.snakes[0].grow_pending > 0,
                                     Cell::P2Tail => !matches!(adv[1], Advance::Move(..))
@@ -664,6 +671,13 @@ impl Game {
                                 if crash {
                                     died[pi] = true;
                                 } else {
+                                    if tail_attack {
+                                        self.snakes[pi].grow_pending += GROW_REWARD;
+                                        if self.snakes[opp].body.len() > 1 {
+                                            self.snakes[opp].body.pop_back();
+                                        }
+                                        won[pi] = true;
+                                    }
                                     if cell2 == Cell::Food {
                                         self.snakes[pi].grow_pending += FOOD_REWARD;
                                     }
@@ -1362,6 +1376,68 @@ mod tests {
         assert!(g.snakes[0].alive);
         assert_eq!(g.snakes[0].grow_pending, FOOD_REWARD,
             "food at extra-step target must grant grow reward");
+    }
+
+    #[test]
+    fn boost_main_step_tail_attack_no_extra_step_death() {
+        // P1 boosting right; main step lands on P2Tail (attack wins).
+        // Without the !won[pi] guard the extra step would advance into P2Body and kill P1.
+        let mut g = make_game();
+        g.clear_snakes();
+
+        // P1: head at (10,12), boost_ticks=8 (even → extra step would fire).
+        // Main step goes to (11,12) = P2Tail. Extra step would go to (12,12) = P2Body.
+        g.snakes[0].body.clear();
+        for i in 0..10 { g.snakes[0].body.push_back((10 - i, 12)); }
+        g.snakes[0].dir = (1, 0); g.snakes[0].next_dir = (1, 0);
+        g.snakes[0].h_accum = h_thresh(10);
+        g.snakes[0].boost_ticks = 8;
+
+        // P2: length 12 → h_thresh=120, h_accum=0 → stays Still.
+        // Tail at (11,12), body segment at (12,12).
+        g.snakes[1].body.clear();
+        for i in 0..12 { g.snakes[1].body.push_back((22 - i, 12)); }
+        // body[0]=(22,12) head … body[10]=(12,12) body … body[11]=(11,12) tail
+        g.snakes[1].dir = (1, 0); g.snakes[1].next_dir = (1, 0);
+        g.snakes[1].h_accum = 0;
+        g.snakes[1].grow_pending = 0;
+
+        g.draw_snakes();
+        g.step();
+
+        assert!(g.snakes[0].alive, "P1 must survive: main-step tail attack, extra step must not fire");
+        assert!(g.snakes[0].grow_pending > 0, "P1 gains attack reward");
+        assert!(g.death_anim.is_some(), "tail attack triggers death animation");
+    }
+
+    #[test]
+    fn boost_extra_step_tail_attack_wins() {
+        // P1 boosting right; P2 tail tip is at the extra-step target and P2 is
+        // stationary this tick (h_thresh > accumulated). P1 must win, not die.
+        let mut g = make_game();
+        g.clear_snakes();
+
+        // P1: head at (10,12), boost_ticks=8 (even → extra step fires) → extra step to (12,12)
+        g.snakes[0].body.clear();
+        for i in 0..10 { g.snakes[0].body.push_back((10 - i, 12)); }
+        g.snakes[0].dir = (1, 0); g.snakes[0].next_dir = (1, 0);
+        g.snakes[0].h_accum = h_thresh(10);
+        g.snakes[0].boost_ticks = 8;
+
+        // P2: length 12 → h_thresh(12)=120; h_accum=0 → 0+100=100 < 120 → Still.
+        // Head at (23,12), tail at (12,12) — exactly where P1's extra step lands.
+        g.snakes[1].body.clear();
+        for i in 0..12 { g.snakes[1].body.push_back((23 - i, 12)); }
+        g.snakes[1].dir = (1, 0); g.snakes[1].next_dir = (1, 0);
+        g.snakes[1].h_accum = 0;
+        g.snakes[1].grow_pending = 0;
+
+        g.draw_snakes();
+        g.step();
+
+        assert!(g.snakes[0].alive, "P1 must survive boost tail attack");
+        assert!(g.snakes[0].grow_pending > 0, "P1 gains attack reward");
+        assert!(g.death_anim.is_some(), "tail attack triggers death animation");
     }
 
     #[test]
