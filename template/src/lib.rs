@@ -45,6 +45,16 @@ fn cell_char(c: Cell) -> char {
     }
 }
 
+fn head_char(dir: (i32, i32)) -> char {
+    match dir {
+        (1, 0)  => '<',  // east
+        (-1, 0) => '>',  // west
+        (0, -1) => 'V',  // north
+        (0, 1)  => 'A',  // south
+        _       => '@',
+    }
+}
+
 struct Snake {
     body: VecDeque<(usize, usize)>,
     dir: (i32, i32),
@@ -863,6 +873,15 @@ impl Game {
         if let Some(ref anim) = self.death_anim {
             for p in &anim.particles {
                 if p.y < H && p.x < W { rows[p.y][p.x] = p.glyph(); }
+            }
+        }
+
+        // Direction-based head characters. Placed before blink so they blank with the body.
+        // Applied even during death animation so the surviving snake keeps its direction glyph.
+        for snake in &self.snakes {
+            if !snake.alive { continue; }
+            if let Some((hx, hy)) = snake.head() {
+                if hy < H && hx < W { rows[hy][hx] = head_char(snake.dir); }
             }
         }
 
