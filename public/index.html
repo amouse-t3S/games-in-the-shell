@@ -254,6 +254,13 @@
       color: #00e838;
     }
 
+    .act-btns {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
     .act-btn {
       width: calc(var(--btn-size, 44px) * 1.1);
       height: calc(var(--btn-size, 44px) * 1.1);
@@ -278,6 +285,16 @@
       box-shadow: inset 0 3px 5px rgba(0,0,0,0.8);
       transform: translateY(2px);
       color: #00ff41;
+    }
+
+    .boost-btn {
+      background: linear-gradient(180deg, #1a2200 0%, #0d1500 100%);
+      border-color: #2a4000;
+      color: #7fff00;
+      box-shadow: 0 3px 0 #040800, inset 0 1px 0 rgba(100,255,0,0.08), 0 0 8px rgba(100,255,0,0.12);
+    }
+    .boost-btn:active {
+      color: #aaff00;
     }
 
     /* ── Responsive layout ── */
@@ -351,7 +368,10 @@
         <div></div>
       </div>
     </div>
-    <button class="act-btn" id="btn-reset">R</button>
+    <div class="act-btns">
+      <button class="act-btn boost-btn" id="btn-boost">B</button>
+      <button class="act-btn" id="btn-reset">R</button>
+    </div>
   </div>
 
   <script type="module">
@@ -476,15 +496,17 @@
     ctrl('btn-left',  () => key(Button.Left));
     ctrl('btn-right', () => key(Button.Right));
     ctrl('btn-down',  () => key(Button.Down));
+    ctrl('btn-boost', () => key(Button.Boost));
     ctrl('btn-reset', () => { reset(); render(); });
 
     window.addEventListener('keydown', (e) => {
       e.preventDefault();
       switch (e.code) {
-        case 'KeyW': key(Button.Up);    break;
-        case 'KeyD': key(Button.Right); break;
-        case 'KeyS': key(Button.Down);  break;
-        case 'KeyA': key(Button.Left);  break;
+        case 'KeyW': case 'KeyK': case 'ArrowUp':    key(Button.Up);    break;
+        case 'KeyD': case 'KeyL': case 'ArrowRight': key(Button.Right); break;
+        case 'KeyS': case 'KeyJ': case 'ArrowDown':  key(Button.Down);  break;
+        case 'KeyA': case 'KeyH': case 'ArrowLeft':  key(Button.Left);  break;
+        case 'Space': key(Button.Boost); break;
         case 'KeyR': reset(); render(); break;
       }
     });

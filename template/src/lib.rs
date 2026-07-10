@@ -54,6 +54,7 @@ struct Snake {
     move_count: usize,   // actual moves made; triggers food-drop every FOOD_DROP_INTERVAL
     h_accum: u32,        // speed accumulator for horizontal moves
     v_accum: u32,        // speed accumulator for vertical moves
+    boost_ticks: u32,   // ticks remaining in the current speed burst
 }
 
 impl Snake {
@@ -126,6 +127,7 @@ struct Game {
     effects: Vec<((usize, usize), u32)>, // (cell position, expiry tick)
     death_anim: Option<DeathAnim>,
     pending_winner: i8,
+    boost_particles: Vec<Particle>,
 }
 
 impl Game {
@@ -158,9 +160,9 @@ impl Game {
             board,
             snakes: [
                 Snake { body: p1_body, dir: (1, 0), next_dir: (1, 0), alive: true, grow_pending: 0, move_count: 0,
-                    h_accum: h_thresh(INIT_LEN) - 1, v_accum: v_thresh(INIT_LEN) - 1 },
+                    h_accum: h_thresh(INIT_LEN) - 1, v_accum: v_thresh(INIT_LEN) - 1, boost_ticks: 0 },
                 Snake { body: p2_body, dir: (-1, 0), next_dir: (-1, 0), alive: true, grow_pending: 0, move_count: 0,
-                    h_accum: h_thresh(INIT_LEN) - 1, v_accum: v_thresh(INIT_LEN) - 1 },
+                    h_accum: h_thresh(INIT_LEN) - 1, v_accum: v_thresh(INIT_LEN) - 1, boost_ticks: 0 },
             ],
             over: false,
             winner: -1,
@@ -170,6 +172,7 @@ impl Game {
             effects: Vec::new(),
             death_anim: None,
             pending_winner: -1,
+            boost_particles: Vec::new(),
         };
         game.draw_snakes();
         game
@@ -419,9 +422,9 @@ impl Game {
         }
         self.ai_step();
 
-        // Lock directions (prevent 180° reversal)
+        // Lock directions (prevent 180° reversal; direction frozen during boost)
         for snake in self.snakes.iter_mut() {
-            if !snake.alive { continue; }
+            if !snake.alive || snake.boost_ticks > 0 { continue; }
             let (ndx, ndy) = snake.next_dir;
             let (cdx, cdy) = snake.dir;
             if !(ndx == -cdx && ndy == -cdy) {
@@ -523,11 +526,19 @@ impl Game {
             if let Advance::Move(nx, ny) = adv[pi] {
                 let len = self.snakes[pi].body.len();
                 let (mdx, mdy) = self.snakes[pi].dir;
-                if mdx != 0 { self.snakes[pi].h_accum = self.snakes[pi].h_accum.saturating_sub(h_thresh(len)); }
-                if mdy != 0 { self.snakes[pi].v_accum = self.snakes[pi].v_accum.saturating_sub(v_thresh(len)); }
+                if self.snakes[pi].boost_ticks > 0 {
+                    // Zero accum so there's no post-boost speed burst
+                    self.snakes[pi].h_accum = 0;
+                    self.snakes[pi].v_accum = 0;
+                } else {
+                    if mdx != 0 { self.snakes[pi].h_accum = self.snakes[pi].h_accum.saturating_sub(h_thresh(len)); }
+                    if mdy != 0 { self.snakes[pi].v_accum = self.snakes[pi].v_accum.saturating_sub(v_thresh(len)); }
+                }
                 self.snakes[pi].body.push_front((nx, ny));
+                let tail_for_afterburn: Option<(usize, usize)>;
                 if self.snakes[pi].grow_pending > 0 {
                     self.snakes[pi].grow_pending -= 1; // skip tail pop → net +1 length
+                    tail_for_afterburn = None;
                 } else {
                     self.snakes[pi].move_count += 1;
                     if self.snakes[pi].move_count >= FOOD_DROP_INTERVAL {
@@ -536,6 +547,8 @@ impl Game {
                         if let Some((tx, ty)) = self.snakes[pi].body.pop_back() {
                             self.board[ty][tx] = Cell::Food;
                         }
+                        // Afterburn marks the shrink cell (the one that becomes empty space)
+                        tail_for_afterburn = self.snakes[pi].body.back().copied();
                         self.snakes[pi].body.pop_back(); // unconditional shrink
                         if self.snakes[pi].body.is_empty() {
                             died[pi]           = true;
@@ -543,11 +556,39 @@ impl Game {
                             starvation_head[pi] = Some((nx, ny));
                         }
                     } else {
+                        tail_for_afterburn = self.snakes[pi].body.back().copied();
                         self.snakes[pi].body.pop_back(); // normal move, no food
                     }
                 }
                 if ate_food[pi] {
                     self.snakes[pi].grow_pending += FOOD_REWARD;
+                }
+                // Afterburn: spawn * at the cell the tail just vacated
+                let pre_boost = self.snakes[pi].boost_ticks;
+                if pre_boost > 0 {
+                    if let Some((tx, ty)) = tail_for_afterburn {
+                        self.boost_particles.push(Particle { x: tx, y: ty, ch: '*', life: 4 });
+                    }
+                    self.snakes[pi].boost_ticks -= 1;
+                    // Extra horizontal half-step on alternate boost ticks → 1.5× rate.
+                    // pre_boost 8,6,4,2 fire the extra step (4 of 8 ticks) = 12 moves total.
+                    let (mdx, _) = self.snakes[pi].dir;
+                    if mdx != 0 && pre_boost % 2 == 0 && !died[pi] {
+                        if let Some((hx, hy)) = self.snakes[pi].head() {
+                            let nx2 = hx as i32 + mdx;
+                            if nx2 <= 0 || nx2 >= W as i32 - 1 {
+                                died[pi] = true; // wall
+                            } else {
+                                let (nx2u, ny2u) = (nx2 as usize, hy);
+                                let tail_pos = self.snakes[pi].body.back().copied();
+                                self.snakes[pi].body.push_front((nx2u, ny2u));
+                                self.snakes[pi].body.pop_back();
+                                if let Some((tx, ty)) = tail_pos {
+                                    self.boost_particles.push(Particle { x: tx, y: ty, ch: '*', life: 4 });
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -629,6 +670,10 @@ impl Game {
             }
         };
 
+        // Age boost-afterburn particles
+        for p in self.boost_particles.iter_mut() { p.life = p.life.saturating_sub(1); }
+        self.boost_particles.retain(|p| p.life > 0);
+
         self.draw_snakes();
 
         // Place break-effect markers at attacked tail positions (after redraw so
@@ -655,6 +700,10 @@ impl Game {
 
     fn advance_death_anim(&mut self) {
         let mut anim = self.death_anim.take().unwrap();
+
+        // Age boost particles so they don't freeze during death anim
+        for p in self.boost_particles.iter_mut() { p.life = p.life.saturating_sub(1); }
+        self.boost_particles.retain(|p| p.life > 0);
 
         // Age existing particles and remove expired ones.
         for p in anim.particles.iter_mut() {
@@ -745,8 +794,10 @@ impl Game {
         if !self.snakes[pi].alive { return Advance::Still; }
         let (dx, dy) = self.snakes[pi].dir;
         let len = self.snakes[pi].body.len();
-        if dx != 0 && self.snakes[pi].h_accum < h_thresh(len) { return Advance::Still; }
-        if dy != 0 && self.snakes[pi].v_accum < v_thresh(len) { return Advance::Still; }
+        if self.snakes[pi].boost_ticks == 0 {
+            if dx != 0 && self.snakes[pi].h_accum < h_thresh(len) { return Advance::Still; }
+            if dy != 0 && self.snakes[pi].v_accum < v_thresh(len) { return Advance::Still; }
+        }
         let Some((hx, hy)) = self.snakes[pi].head() else { return Advance::Still; };
         let nx = hx as i32 + dx;
         let ny = hy as i32 + dy;
@@ -763,10 +814,29 @@ impl Game {
         }
     }
 
+    fn activate_boost(&mut self, pi: usize) {
+        if !self.snakes[pi].alive || self.snakes[pi].boost_ticks > 0
+            || self.snakes[pi].body.len() < 3 || self.over
+        {
+            return;
+        }
+        for _ in 0..2 {
+            if let Some((tx, ty)) = self.snakes[pi].body.pop_back() {
+                self.board[ty][tx] = Cell::Empty;
+            }
+        }
+        self.snakes[pi].boost_ticks = 8;
+    }
+
     fn render_screen(&self) -> Vec<u8> {
         let mut rows: Vec<Vec<char>> = self.board.iter()
             .map(|row| row.iter().map(|&c| cell_char(c)).collect())
             .collect();
+
+        // Overlay boost afterburn particles
+        for p in &self.boost_particles {
+            if p.y < H && p.x < W { rows[p.y][p.x] = p.glyph(); }
+        }
 
         // Overlay death-animation particles on top of the board.
         if let Some(ref anim) = self.death_anim {
@@ -802,7 +872,9 @@ impl Game {
 
         let p1len = self.snakes[0].body.len();
         let p2len = self.snakes[1].body.len();
-        let p1_status = if self.snakes[0].alive { String::new() } else { "[DEAD]".into() };
+        let p1_status = if self.snakes[0].alive {
+            if self.snakes[0].boost_ticks > 0 { "[BOOST]".into() } else { String::new() }
+        } else { "[DEAD]".into() };
         let p2_status = if self.snakes[1].alive { String::new() } else { "[DEAD]".into() };
         let left  = format!("P1:{}{} WASD", p1len, p1_status);
         let right = format!("CPU[{}] P2:{}{}", self.cpu_strategy.label(), p2len, p2_status);
@@ -819,7 +891,7 @@ impl Game {
         };
 
         rows[H - 1] = {
-            let s = "P1: W/A/S/D  |  tail +5  |  food +2  |  len<10=STARVING |  R=restart  Q=quit";
+            let s = "WASD/hjkl/SPC=boost  |  tail+5  |  food+2  |  len<10=STARVING  |  R=restart  Q";
             let mut buf = vec![' '; W];
             for (i, c) in s.chars().enumerate() { if i < W { buf[i] = c; } }
             buf
@@ -867,6 +939,7 @@ pub enum Button {
     Right = 2,
     Down = 4,
     Left = 8,
+    Boost = 16,
     Restart = 200,
 }
 
@@ -883,6 +956,7 @@ pub fn key(button: Button) {
         Button::Right   => game.set_dir(0, (1,  0)),
         Button::Down    => game.set_dir(0, (0,  1)),
         Button::Left    => game.set_dir(0, (-1, 0)),
+        Button::Boost   => game.activate_boost(0),
         Button::Restart => *game = Game::new(),
     }
 }

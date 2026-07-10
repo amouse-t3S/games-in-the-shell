@@ -25,12 +25,27 @@ fn main() {
     let frame_duration = Duration::from_millis(67); // ~15 FPS
 
     let _handle = thread::spawn(move || {
-        let mut buffer = [0; 1];
-        while let Ok(_) = stdin().read(&mut buffer) {
-            match tx.send(buffer[0] as char) {
-                Ok(_) => {}
-                Err(_) => break,
-            }
+        let mut buf = [0u8; 1];
+        loop {
+            if stdin().read(&mut buf).is_err() { break; }
+            let ch = buf[0];
+            // Arrow keys arrive as ESC [ A/B/C/D — consume the sequence and
+            // synthesise a virtual char that the main loop recognises.
+            let send_ch = if ch == 0x1b {
+                let mut seq = [0u8; 2];
+                if stdin().read_exact(&mut seq).is_ok() && seq[0] == b'[' {
+                    match seq[1] {
+                        b'A' => '\x01', // up
+                        b'B' => '\x02', // down
+                        b'C' => '\x03', // right
+                        b'D' => '\x04', // left
+                        _    => continue,
+                    }
+                } else { continue }
+            } else {
+                ch as char
+            };
+            if tx.send(send_ch).is_err() { break; }
         }
     });
 
@@ -42,11 +57,12 @@ fn main() {
         if let Ok(input) = rx.try_recv() {
             match input {
                 'q' | 'Q' => running = false,
-                // Player 1: WASD
-                'w' | 'W' => key(Button::Up),
-                'd' | 'D' => key(Button::Right),
-                's' | 'S' => key(Button::Down),
-                'a' | 'A' => key(Button::Left),
+                // Player 1: WASD / hjkl / arrow keys
+                'w' | 'W' | 'k' | 'K' | '\x01' => key(Button::Up),
+                'd' | 'D' | 'l' | 'L' | '\x03' => key(Button::Right),
+                's' | 'S' | 'j' | 'J' | '\x02' => key(Button::Down),
+                'a' | 'A' | 'h' | 'H' | '\x04' => key(Button::Left),
+                ' ' => key(Button::Boost),
                 // Restart
                 'r' | 'R' => reset(),
                 _ => {}
