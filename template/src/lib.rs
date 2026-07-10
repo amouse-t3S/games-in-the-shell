@@ -580,11 +580,32 @@ impl Game {
                                 died[pi] = true; // wall
                             } else {
                                 let (nx2u, ny2u) = (nx2 as usize, hy);
-                                let tail_pos = self.snakes[pi].body.back().copied();
-                                self.snakes[pi].body.push_front((nx2u, ny2u));
-                                self.snakes[pi].body.pop_back();
-                                if let Some((tx, ty)) = tail_pos {
-                                    self.boost_particles.push(Particle { x: tx, y: ty, ch: '*', life: 4 });
+                                let cell2 = self.board[ny2u][nx2u];
+                                // Mirror the main collision logic for the extra step.
+                                let crash = match cell2 {
+                                    Cell::Wall | Cell::P1Body | Cell::P2Body => true,
+                                    // Head is only lethal when the opponent is not moving away.
+                                    Cell::P1Head => pi != 0 && !matches!(adv[0], Advance::Move(..)),
+                                    Cell::P2Head => pi != 1 && !matches!(adv[1], Advance::Move(..)),
+                                    // Tail is lethal when it stays (owner stationary or growing).
+                                    Cell::P1Tail => !matches!(adv[0], Advance::Move(..))
+                                        || self.snakes[0].grow_pending > 0,
+                                    Cell::P2Tail => !matches!(adv[1], Advance::Move(..))
+                                        || self.snakes[1].grow_pending > 0,
+                                    _ => false,
+                                };
+                                if crash {
+                                    died[pi] = true;
+                                } else {
+                                    if cell2 == Cell::Food {
+                                        self.snakes[pi].grow_pending += FOOD_REWARD;
+                                    }
+                                    let tail_pos = self.snakes[pi].body.back().copied();
+                                    self.snakes[pi].body.push_front((nx2u, ny2u));
+                                    self.snakes[pi].body.pop_back();
+                                    if let Some((tx, ty)) = tail_pos {
+                                        self.boost_particles.push(Particle { x: tx, y: ty, ch: '*', life: 4 });
+                                    }
                                 }
                             }
                         }
@@ -1119,6 +1140,150 @@ mod tests {
         g.step();
 
         assert!(!g.snakes[0].alive, "P1 should die entering its own body");
+    }
+
+    // ── New collision tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn starving_snake_body_is_still_lethal() {
+        // Blink effect is purely visual; a snake at length < 10 must still kill opponents.
+        let mut g = make_game();
+        g.clear_snakes();
+
+        // P1: len=3 (blink range), stationary this tick
+        g.snakes[0].body.clear();
+        g.snakes[0].body.push_back((42, 5));
+        g.snakes[0].body.push_back((41, 5));
+        g.snakes[0].body.push_back((40, 5));
+        g.snakes[0].dir = (1, 0); g.snakes[0].next_dir = (1, 0);
+        g.snakes[0].h_accum = 0; // not moving
+
+        // P2: head at (41, 6), moving up → (41, 5) = P1 body
+        g.snakes[1].body.clear();
+        g.snakes[1].body.push_back((41, 6));
+        for i in 1..10 { g.snakes[1].body.push_back((41, 6 + i)); }
+        g.snakes[1].dir = (0, -1); g.snakes[1].next_dir = (0, -1);
+        g.snakes[1].v_accum = v_thresh(10);
+
+        g.draw_snakes();
+        g.step();
+
+        assert!(!g.snakes[1].alive, "P2 must die running into P1 body even when P1 is blinking");
+        assert!(g.snakes[0].alive, "P1 survives");
+    }
+
+    #[test]
+    fn tail_stays_when_growing() {
+        // When grow_pending > 0 the tail does not retreat; the opponent must be blocked.
+        let mut g = make_game();
+        g.clear_snakes();
+
+        // P2: 2-cell snake moving left, grow_pending=2 → tail at (31,12) stays this tick
+        g.snakes[1].body.clear();
+        g.snakes[1].body.push_back((30, 12));
+        g.snakes[1].body.push_back((31, 12));
+        g.snakes[1].dir = (-1, 0); g.snakes[1].next_dir = (-1, 0);
+        g.snakes[1].h_accum = h_thresh(2);
+        g.snakes[1].grow_pending = 2;
+
+        // P1: head at (31, 13), moving up → (31, 12) = P2 tail that stays
+        g.snakes[0].body.clear();
+        for i in 0..5 { g.snakes[0].body.push_back((31, 13 + i)); }
+        g.snakes[0].dir = (0, -1); g.snakes[0].next_dir = (0, -1);
+        g.snakes[0].v_accum = v_thresh(5);
+
+        g.draw_snakes();
+        g.step();
+
+        // P1 attacked successfully (tail was lethal due to grow_pending).
+        // grow_pending is GROW_REWARD from attack minus 1 already consumed in the move loop.
+        assert!(g.snakes[0].alive, "P1 should survive the tail attack");
+        assert!(g.snakes[0].grow_pending > 0, "P1 should gain attack reward");
+        assert!(g.death_anim.is_some(), "attack triggers end-game animation");
+    }
+
+    #[test]
+    fn tail_retreats_when_not_growing() {
+        // When grow_pending == 0 the tail retreats; the chasing snake must pass safely.
+        let mut g = make_game();
+        g.clear_snakes();
+
+        // P2: 2-cell snake moving left, grow_pending=0 → tail at (31,12) retreats
+        g.snakes[1].body.clear();
+        g.snakes[1].body.push_back((30, 12));
+        g.snakes[1].body.push_back((31, 12));
+        g.snakes[1].dir = (-1, 0); g.snakes[1].next_dir = (-1, 0);
+        g.snakes[1].h_accum = h_thresh(2);
+        g.snakes[1].grow_pending = 0;
+
+        // P1: head at (31, 13), moving up → (31, 12) = where P2 tail was (now empty)
+        g.snakes[0].body.clear();
+        for i in 0..5 { g.snakes[0].body.push_back((31, 13 + i)); }
+        g.snakes[0].dir = (0, -1); g.snakes[0].next_dir = (0, -1);
+        g.snakes[0].v_accum = v_thresh(5);
+
+        g.draw_snakes();
+        g.step();
+
+        assert!(g.snakes[0].alive, "P1 should survive entering the vacated tail cell");
+        assert_eq!(g.snakes[0].grow_pending, 0, "no attack reward — tail was not lethal");
+        assert!(!g.over, "game continues");
+    }
+
+    #[test]
+    fn boost_extra_step_body_collision() {
+        // P1 boosting right; P2 is stationary with head 2 cells ahead.
+        // The extra boost half-step must detect the collision and kill P1.
+        let mut g = make_game();
+        g.clear_snakes();
+
+        // P1: head at (10,12), boost_ticks=8 (even → extra step fires on this tick)
+        g.snakes[0].body.clear();
+        for i in 0..10 { g.snakes[0].body.push_back((10 - i, 12)); }
+        g.snakes[0].dir = (1, 0); g.snakes[0].next_dir = (1, 0);
+        g.snakes[0].h_accum = h_thresh(10);
+        g.snakes[0].boost_ticks = 8;
+
+        // P2: stationary this tick. Length 11 → h_thresh=110; h_accum=0 → 100 < 110 → Still.
+        // Head at (12,12) — exactly where the extra step lands.
+        g.snakes[1].body.clear();
+        for i in 0..11 { g.snakes[1].body.push_back((12 + i, 12)); }
+        g.snakes[1].dir = (1, 0); g.snakes[1].next_dir = (1, 0);
+        g.snakes[1].h_accum = 0; // not moving this tick
+
+        g.draw_snakes();
+        g.step();
+
+        assert!(!g.snakes[0].alive, "P1 should die on extra boost step into P2 head");
+    }
+
+    #[test]
+    fn boost_extra_step_eats_food() {
+        // P1 boosting right; a food cell is exactly at the extra-step target.
+        // The food must be consumed and grow reward must be granted.
+        let mut g = make_game();
+        g.clear_snakes();
+
+        g.snakes[0].body.clear();
+        for i in 0..10 { g.snakes[0].body.push_back((10 - i, 12)); }
+        g.snakes[0].dir = (1, 0); g.snakes[0].next_dir = (1, 0);
+        g.snakes[0].h_accum = h_thresh(10);
+        g.snakes[0].boost_ticks = 8; // even → extra step fires
+
+        // P2: far away, no interference
+        g.snakes[1].body.clear();
+        for i in 0..10 { g.snakes[1].body.push_back((60 - i, 20)); }
+        g.snakes[1].dir = (1, 0); g.snakes[1].next_dir = (1, 0);
+        g.snakes[1].h_accum = 0;
+
+        g.draw_snakes();
+        g.board[12][12] = Cell::Food; // at (12,12) — extra step target
+
+        g.step();
+
+        assert!(g.snakes[0].alive);
+        assert_eq!(g.snakes[0].grow_pending, FOOD_REWARD,
+            "food at extra-step target must grant grow reward");
     }
 
     #[test]
